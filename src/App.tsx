@@ -1,10 +1,16 @@
 import React, { useState } from 'react';
 import { Upload, Calendar, FileOutput, Settings2 } from 'lucide-react';
+import axios from 'axios';
 
 interface ProcessingFunction {
   id: string;
   name: string;
   description: string;
+}
+
+interface ProcessingStatus {
+  progress: number;
+  message: string;
 }
 
 function App() {
@@ -13,6 +19,13 @@ function App() {
   const [text2, setText2] = useState('');
   const [text3, setText3] = useState('');
   const [selectedDate, setSelectedDate] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [processedFilePath, setProcessedFilePath] = useState<string | null>(null);
+  const [processingStatus, setProcessingStatus] = useState<ProcessingStatus>({
+    progress: 0,
+    message: ''
+  });
   
   const processingFunctions: ProcessingFunction[] = [
     { id: 'func1', name: 'Merge Files', description: 'Combine multiple Excel files into one' },
@@ -28,18 +41,81 @@ function App() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
       setFiles(Array.from(e.target.files));
+      setError(null);
     }
   };
 
-  const handleProcessing = (functionId: string) => {
-    // This will be connected to your Python backend later
-    console.log('Processing with function:', functionId, {
-      files,
-      text1,
-      text2,
-      text3,
-      selectedDate,
-    });
+  const handleProcessing = async (functionId: string) => {
+    try {
+      setLoading(true);
+      setError(null);
+      setProcessingStatus({ progress: 0, message: 'Starting processing...' });
+
+      const formData = new FormData();
+      files.forEach(file => formData.append('files', file));
+      formData.append('text1', text1);
+      formData.append('text2', text2);
+      formData.append('text3', text3);
+      formData.append('selected_date', selectedDate);
+
+      const eventSource = new EventSource(`http://localhost:8000/api/status/${functionId}`);
+      
+      eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        setProcessingStatus({
+          progress: data.progress,
+          message: data.message
+        });
+      };
+
+      const response = await axios.post(
+        `http://localhost:8000/api/process/${functionId}`,
+        formData,
+        {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+        }
+      );
+
+      eventSource.close();
+
+      if (response.data.output_file) {
+        setProcessedFilePath(response.data.output_file);
+        setProcessingStatus({ progress: 100, message: 'Processing complete!' });
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'An error occurred');
+      setProcessingStatus({ progress: 0, message: '' });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleExport = async () => {
+    if (!processedFilePath) return;
+
+    try {
+      setLoading(true);
+      const filename = processedFilePath.split('/').pop();
+      const response = await axios.get(
+        `http://localhost:8000/api/export/${filename}`,
+        { responseType: 'blob' }
+      );
+
+      // Create download link
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `processed_${filename}`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Export failed');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -55,6 +131,33 @@ function App() {
       </header>
 
       <main className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
+        {/* Add Progress Status Display */}
+        {loading && (
+          <div className="mb-6 bg-white p-4 rounded-lg shadow-sm">
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="text-sm font-medium text-gray-700">Processing Status</span>
+                <span className="text-sm text-gray-500">{processingStatus.progress}%</span>
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-2.5">
+                <div 
+                  className="bg-indigo-600 h-2.5 rounded-full transition-all duration-300" 
+                  style={{ width: `${processingStatus.progress}%` }}
+                ></div>
+              </div>
+              {processingStatus.message && (
+                <p className="text-sm text-gray-600">{processingStatus.message}</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {error && (
+          <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-md">
+            <p className="text-red-600">{error}</p>
+          </div>
+        )}
+
         <div className="grid grid-cols-1 gap-8 md:grid-cols-2">
           {/* Input Section */}
           <div className="space-y-6 bg-white p-6 rounded-lg shadow-sm">
@@ -75,6 +178,7 @@ function App() {
                         accept=".xlsx,.xls"
                         className="sr-only"
                         onChange={handleFileChange}
+                        disabled={loading}
                       />
                     </label>
                   </div>
@@ -101,6 +205,7 @@ function App() {
                   value={text1}
                   onChange={(e) => setText1(e.target.value)}
                   className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                  disabled={loading}
                 />
               </div>
               <div>
@@ -110,6 +215,7 @@ function App() {
                   value={text2}
                   onChange={(e) => setText2(e.target.value)}
                   className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                  disabled={loading}
                 />
               </div>
               <div>
@@ -119,6 +225,7 @@ function App() {
                   value={text3}
                   onChange={(e) => setText3(e.target.value)}
                   className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                  disabled={loading}
                 />
               </div>
               <div>
@@ -132,6 +239,7 @@ function App() {
                     value={selectedDate}
                     onChange={(e) => setSelectedDate(e.target.value)}
                     className="block w-full pl-10 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                    disabled={loading}
                   />
                 </div>
               </div>
@@ -146,7 +254,8 @@ function App() {
                 <button
                   key={func.id}
                   onClick={() => handleProcessing(func.id)}
-                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={loading || files.length === 0}
                 >
                   {func.name}
                 </button>
@@ -156,11 +265,12 @@ function App() {
             {/* Export Button */}
             <div className="mt-6 border-t border-gray-200 pt-6">
               <button
-                onClick={() => console.log('Export')}
-                className="w-full inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500"
+                onClick={handleExport}
+                disabled={loading || !processedFilePath}
+                className="w-full inline-flex items-center justify-center px-4 py-2 border border-transparent text-sm font-medium rounded-md shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <FileOutput className="mr-2 h-5 w-5" />
-                Export Processed File
+                {loading ? 'Processing...' : 'Export Processed File'}
               </button>
             </div>
           </div>
